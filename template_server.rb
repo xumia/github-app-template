@@ -6,6 +6,7 @@ require 'openssl'     # Verifies the webhook signature
 require 'jwt'         # Authenticates a GitHub App
 require 'time'        # Gets ISO 8601 representation of a Time object
 require 'logger'      # Logs debug statements
+require 'smee'
 
 set :port, 3000
 set :bind, '0.0.0.0'
@@ -40,6 +41,23 @@ class GHAapp < Sinatra::Application
   # The GitHub App's identifier (type integer) set when registering an app.
   APP_IDENTIFIER = ENV['GITHUB_APP_IDENTIFIER']
 
+  GITHUB_CLIENT_ID = ENV['GITHUB_CLIENT_ID']
+  GITHUB_CLIENT_SECRET = ENV['GITHUB_CLIENT_SECRET']
+  @@app_client = Octokit::Client.new \
+    :client_id     => GITHUB_CLIENT_ID,
+    :client_secret => GITHUB_CLIENT_SECRET
+
+  GITHUB_USER_NAME = ENV['GITHUB_USER_NAME']
+  GITHUB_USER_PASSWORD = ENV['GITHUB_USER_PASSWORD']
+  @@user_client = Octokit::Client.new \
+    :login     => GITHUB_USER_NAME,
+    :password  => GITHUB_USER_PASSWORD
+
+  @@smee_client = SmeeClient.new \
+    :source    => 'https://smee.io/ag2XiZaIzfNuiGn',
+    :target    => 'http://localhost:3000/event_handler'
+  @@smee_client.start()
+
   # Turn on Sinatra's verbose logging during development
   configure :development do
     set :logging, Logger::DEBUG
@@ -53,6 +71,7 @@ class GHAapp < Sinatra::Application
     authenticate_app
     # Authenticate the app installation in order to run API operations
     authenticate_installation(@payload)
+    handle_issue_comment(@github_event, @installation_client, @payload)
   end
 
 
@@ -61,6 +80,12 @@ class GHAapp < Sinatra::Application
     # # # # # # # # # # # #
     # ADD YOUR CODE HERE  #
     # # # # # # # # # # # #
+    case request.env['HTTP_X_GITHUB_EVENT']
+    when 'issue_comment'
+      if @payload['action'] === 'opened'
+        handle_issue_comment(@github_event, @installation_client, @payload)
+      end
+    end
 
     200 # success status
   end
@@ -71,6 +96,32 @@ class GHAapp < Sinatra::Application
     # # # # # # # # # # # # # # # # #
     # ADD YOUR HELPER METHODS HERE  #
     # # # # # # # # # # # # # # # # #
+    def handle_issue_comment(event, client, payload)
+      if event == 'issue_comment' && payload['issue'].key?('pull_request')
+        issue_user_login = payload['issue']['user']['login']
+        puts("issue_user_login=#{issue_user_login}")
+        comment_user_login = payload['comment']['user']['login']
+        if issue_user_login == comment_user_login
+          comment_body = payload['comment']['body']
+          puts("comment_body=#{comment_body}")
+          if comment_body.downcase.start_with?('/azurepipelineswrapper run') || comment_body.downcase.start_with?('/azpw run')
+            repo = payload['repository']['full_name']
+            issue_number = payload['issue']['number']
+            puts("comment_body=#{comment_body}")
+            puts("repository=#{repo}")
+            puts("issue_number=#{issue_number}")
+            len = 26
+            if comment_body.downcase.start_with?('/azpw run')
+              len = 9
+            end
+            comment = '/AzurePipelines run' + comment_body[len..-1]
+            ret = @@user_client.add_comment(repo, issue_number, comment)
+            puts("ret=${ret}")
+          end
+        end
+      end
+      request.env['HTTP_X_GITHUB_EVENT']
+    end
 
     # Saves the raw payload and converts the payload to JSON format
     def get_payload_request(request)
@@ -79,6 +130,7 @@ class GHAapp < Sinatra::Application
       request.body.rewind
       # The raw text of the body is required for webhook signature verification
       @payload_raw = request.body.read
+      @github_event = request.env['HTTP_X_GITHUB_EVENT']
       begin
         @payload = JSON.parse @payload_raw
       rescue => e

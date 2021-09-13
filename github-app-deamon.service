@@ -1,0 +1,12 @@
+[Unit]
+Description=Azure Pipelines Wrapper
+
+[Service]
+User=xumia
+Group=xumia
+WorkingDirectory=/projects/xumia/azure/github-app-template
+Restart=always
+ExecStart=/projects/xumia/azure/github-app-template/deamon.sh
+
+[Install]
+WantedBy=multi-user.target
